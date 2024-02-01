@@ -1,4 +1,5 @@
-package @package@;
+package com.fasterxml.jackson.databind.cfg;
+//package @package@;
 
 import com.fasterxml.jackson.core.Version;
 import com.fasterxml.jackson.core.Versioned;
