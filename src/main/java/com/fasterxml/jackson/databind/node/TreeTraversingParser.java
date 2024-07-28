@@ -54,7 +54,7 @@ public class TreeTraversingParser extends ParserMinimalBase
 
     public TreeTraversingParser(JsonNode n, ObjectCodec codec)
     {
-        super(0);
+        super(StreamReadConstraints.defaults());
         _objectCodec = codec;
         _nodeCursor = new NodeCursor.RootCursor(n, null);
     }
@@ -92,7 +92,7 @@ public class TreeTraversingParser extends ParserMinimalBase
         if (!_closed) {
             _closed = true;
             _nodeCursor = null;
-            _currToken = null;
+            _updateTokenToNull();
         }
     }
 
@@ -105,7 +105,7 @@ public class TreeTraversingParser extends ParserMinimalBase
     @Override
     public JsonToken nextToken() throws IOException
     {
-        _currToken = _nodeCursor.nextToken();
+        _nullSafeUpdateToken(_nodeCursor.nextToken());
         if (_currToken == null) {
             _closed = true; // if not already set
             return null;
@@ -133,10 +133,10 @@ public class TreeTraversingParser extends ParserMinimalBase
     {
         if (_currToken == JsonToken.START_OBJECT) {
             _nodeCursor = _nodeCursor.getParent();
-            _currToken = JsonToken.END_OBJECT;
+            _updateToken(JsonToken.END_OBJECT);
         } else if (_currToken == JsonToken.START_ARRAY) {
             _nodeCursor = _nodeCursor.getParent();
-            _currToken = JsonToken.END_ARRAY;
+            _updateToken(JsonToken.END_ARRAY);
         }
         return this;
     }
@@ -152,13 +152,18 @@ public class TreeTraversingParser extends ParserMinimalBase
     /**********************************************************
      */
 
-    @Override public String getCurrentName() {
+    @Override
+    public String currentName() {
         NodeCursor crsr = _nodeCursor;
         if (_currToken == JsonToken.START_OBJECT || _currToken == JsonToken.START_ARRAY) {
             crsr = crsr.getParent();
         }
         return (crsr == null) ? null : crsr.getCurrentName();
     }
+
+    @Deprecated // since 2.17
+    @Override
+    public String getCurrentName() { return currentName(); }
 
     @Override public void overrideCurrentName(String name) {
         NodeCursor crsr = _nodeCursor;
@@ -176,15 +181,23 @@ public class TreeTraversingParser extends ParserMinimalBase
     }
 
     @Override
-    public JsonLocation getTokenLocation() {
+    public JsonLocation currentLocation() {
         return JsonLocation.NA;
     }
 
     @Override
-    public JsonLocation getCurrentLocation() {
+    public JsonLocation currentTokenLocation() {
         return JsonLocation.NA;
     }
 
+    @Deprecated // since 2.17
+    @Override
+    public JsonLocation getTokenLocation() { return currentTokenLocation(); }
+
+    @Deprecated // since 2.17
+    @Override
+    public JsonLocation getCurrentLocation() { return currentLocation(); }
+    
     /*
     /**********************************************************
     /* Public API, access to textual content
@@ -250,6 +263,21 @@ public class TreeTraversingParser extends ParserMinimalBase
     public NumberType getNumberType() throws IOException {
         JsonNode n = currentNumericNode();
         return (n == null) ? null : n.numberType();
+    }
+
+    @Override
+    public NumberTypeFP getNumberTypeFP() throws IOException {
+        NumberType nt = getNumberType();
+        if (nt == NumberType.BIG_DECIMAL) {
+            return NumberTypeFP.BIG_DECIMAL;
+        }
+        if (nt == NumberType.DOUBLE) {
+            return NumberTypeFP.DOUBLE64;
+        }
+        if (nt == NumberType.FLOAT) {
+            return NumberTypeFP.FLOAT32;
+        }
+        return NumberTypeFP.UNKNOWN;
     }
 
     @Override

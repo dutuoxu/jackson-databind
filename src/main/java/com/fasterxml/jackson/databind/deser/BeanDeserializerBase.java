@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 import com.fasterxml.jackson.annotation.*;
 
@@ -11,6 +12,7 @@ import com.fasterxml.jackson.core.*;
 import com.fasterxml.jackson.core.JsonParser.NumberType;
 
 import com.fasterxml.jackson.databind.*;
+import com.fasterxml.jackson.databind.cfg.ConfigOverride;
 import com.fasterxml.jackson.databind.deser.impl.*;
 import com.fasterxml.jackson.databind.deser.std.StdDelegatingDeserializer;
 import com.fasterxml.jackson.databind.deser.std.StdDeserializer;
@@ -176,8 +178,9 @@ public abstract class BeanDeserializerBase
      * Note that this is <b>only needed</b> for polymorphic types,
      * that is, when the actual type is not statically known.
      * For other types this remains null.
+     * The map type changed in 2.18 (from HashMap to ConcurrentHashMap)
      */
-    protected transient HashMap<ClassKey, JsonDeserializer<Object>> _subDeserializers;
+    protected transient ConcurrentHashMap<ClassKey, JsonDeserializer<Object>> _subDeserializers;
 
     /**
      * If one of properties has "unwrapped" value, we need separate
@@ -250,7 +253,7 @@ public abstract class BeanDeserializerBase
             ;
 
         // Any transformation we may need to apply?
-        final JsonFormat.Value format = beanDesc.findExpectedFormat(null);
+        final JsonFormat.Value format = beanDesc.findExpectedFormat();
         _serializationShape = format.getShape();
 
         _needViewProcesing = hasViews;
@@ -695,12 +698,29 @@ ClassUtil.getTypeDescription(_beanType), ClassUtil.classNameOf(_valueInstantiato
 
     @SuppressWarnings("unchecked")
     private JsonDeserializer<Object> _findDelegateDeserializer(DeserializationContext ctxt,
-            JavaType delegateType, AnnotatedWithParams delegateCreator) throws JsonMappingException
+            JavaType delegateType, AnnotatedWithParams delegateCreator)
+        throws JsonMappingException
     {
-        // Need to create a temporary property to allow contextual deserializers:
-        BeanProperty.Std property = new BeanProperty.Std(TEMP_PROPERTY_NAME,
-                delegateType, null, delegateCreator,
-                PropertyMetadata.STD_OPTIONAL);
+        // 27-Nov-2023, tatu: [databind#4200] Need to resolve PropertyMetadata.
+        //   And all we have is the actual Creator method; but for annotations
+        //   we actually need the one parameter -- if there is one
+        //   (NOTE! This would not work for case of more than one parameter with
+        //   delegation, others injected)
+        final BeanProperty property;
+
+        if ((delegateCreator != null) && (delegateCreator.getParameterCount() == 1)) {
+            AnnotatedMember delegator = delegateCreator.getParameter(0);
+            PropertyMetadata propMd = _getSetterInfo(ctxt, delegator, delegateType);
+            property = new BeanProperty.Std(TEMP_PROPERTY_NAME,
+                    delegateType, null, delegator, propMd);
+        } else {
+            // No creator indicated; or Zero, or more than 2 arguments (since we don't
+            // know which one is the  "real" delegating parameter. Although could possibly
+            // figure it out if someone provides actual use case
+            property = new BeanProperty.Std(TEMP_PROPERTY_NAME,
+                    delegateType, null, delegateCreator,
+                    PropertyMetadata.STD_OPTIONAL);
+        }
         TypeDeserializer td = delegateType.getTypeHandler();
         if (td == null) {
             td = ctxt.getConfig().findTypeDeserializer(delegateType);
@@ -718,6 +738,62 @@ ClassUtil.getTypeDescription(_beanType), ClassUtil.classNameOf(_valueInstantiato
             return new TypeWrappedDeserializer(td, dd);
         }
         return dd;
+    }
+
+    /**
+     * Method essentially copied from {@code BasicDeserializerFactory},
+     * needed to find {@link PropertyMetadata} for Delegating Creator,
+     * for access to annotation-derived info.
+     *
+     * @since 2.16.1
+     */
+    protected PropertyMetadata _getSetterInfo(DeserializationContext ctxt,
+            AnnotatedMember accessor, JavaType type)
+    {
+        final AnnotationIntrospector intr = ctxt.getAnnotationIntrospector();
+        final DeserializationConfig config = ctxt.getConfig();
+
+        PropertyMetadata metadata = PropertyMetadata.STD_OPTIONAL;
+        boolean needMerge = true;
+        Nulls valueNulls = null;
+        Nulls contentNulls = null;
+
+        // NOTE: compared to `POJOPropertyBuilder`, we only have access to creator
+        // parameter, not other accessors, so code bit simpler
+        // Ok, first: does property itself have something to say?
+        if (intr != null) {
+            JsonSetter.Value setterInfo = intr.findSetterInfo(accessor);
+            if (setterInfo != null) {
+                valueNulls = setterInfo.nonDefaultValueNulls();
+                contentNulls = setterInfo.nonDefaultContentNulls();
+            }
+        }
+        // If not, config override?
+        if (needMerge || (valueNulls == null) || (contentNulls == null)) {
+            ConfigOverride co = config.getConfigOverride(type.getRawClass());
+            JsonSetter.Value setterInfo = co.getSetterInfo();
+            if (setterInfo != null) {
+                if (valueNulls == null) {
+                    valueNulls = setterInfo.nonDefaultValueNulls();
+                }
+                if (contentNulls == null) {
+                    contentNulls = setterInfo.nonDefaultContentNulls();
+                }
+            }
+        }
+        if (needMerge || (valueNulls == null) || (contentNulls == null)) {
+            JsonSetter.Value setterInfo = config.getDefaultSetterInfo();
+            if (valueNulls == null) {
+                valueNulls = setterInfo.nonDefaultValueNulls();
+            }
+            if (contentNulls == null) {
+                contentNulls = setterInfo.nonDefaultContentNulls();
+            }
+        }
+        if ((valueNulls != null) || (contentNulls != null)) {
+            metadata = metadata.withNulls(valueNulls, contentNulls);
+        }
+        return metadata;
     }
 
     /**
@@ -1398,7 +1474,7 @@ ClassUtil.name(refName), ClassUtil.getTypeDescription(backRefType),
         if (pojo == null) { // not yet; should wait...
             throw new UnresolvedForwardReference(p,
                     "Could not resolve Object Id ["+id+"] (for "+_beanType+").",
-                    p.getCurrentLocation(), roid);
+                    p.currentLocation(), roid);
         }
         return pojo;
     }
@@ -1406,7 +1482,9 @@ ClassUtil.name(refName), ClassUtil.getTypeDescription(backRefType),
     protected Object deserializeFromObjectUsingNonDefault(JsonParser p,
             DeserializationContext ctxt) throws IOException
     {
-        final JsonDeserializer<Object> delegateDeser = _delegateDeserializer();
+        // 02-Jul-2024, tatu: [databind#4602] Need to tweak regular and "array" delegating
+        //   Creator handling
+        final JsonDeserializer<Object> delegateDeser = _delegateDeserializer(p);
         if (delegateDeser != null) {
             final Object bean = _valueInstantiator.createUsingDelegate(ctxt,
                     delegateDeser.deserialize(p, ctxt));
@@ -1429,7 +1507,7 @@ ClassUtil.name(refName), ClassUtil.getTypeDescription(backRefType),
         // 01-May-2022, tatu: [databind#3417] special handling for (Graal) native images
         if (NativeImageUtil.needsReflectionConfiguration(raw)) {
             return ctxt.handleMissingInstantiator(raw, null, p,
-                    "cannot deserialize from Object value (no delegate- or property-based Creator): this appears to be a native image, in which case you may need to configure reflection for the class that is to be deserialized");
+"cannot deserialize from Object value (no delegate- or property-based Creator): this appears to be a native image, in which case you may need to configure reflection for the class that is to be deserialized");
         }
         return ctxt.handleMissingInstantiator(raw, getValueInstantiator(), p,
 "cannot deserialize from Object value (no delegate- or property-based Creator)");
@@ -1634,6 +1712,30 @@ ClassUtil.name(refName), ClassUtil.getTypeDescription(backRefType),
         return deser;
     }
 
+    /**
+     * Alternate to {@link #_delegateDeserializer()} which will only consider
+     * {@code _arrayDelegateDeserializer} if given {@link JsonParser} points to
+     * {@link JsonToken#START_ARRAY} token.
+     *
+     * @since 2.18
+     */
+    protected final JsonDeserializer<Object> _delegateDeserializer(JsonParser p) {
+        if (_delegateDeserializer == null) {
+            // Note! Will not call `JsonParser.isExpectedArrayToken()` as that could
+            // "transform" `JsonToken.START_OBJECT` into `JsonToken.START_ARRAY` and
+            // here there is no strong expectation of Array value
+            if (_arrayDelegateDeserializer != null) {
+                // Alas, need bit elaborate logic: either JSON Array, OR no
+                // Properties-based Creator
+                if (p.hasToken(JsonToken.START_ARRAY)
+                        || (_propertyBasedCreator == null)) {
+                    return _arrayDelegateDeserializer;
+                }
+            }
+        }
+        return _delegateDeserializer;
+    }
+
     /*
     /**********************************************************
     /* Overridable helper methods
@@ -1808,17 +1910,14 @@ ClassUtil.name(refName), ClassUtil.getTypeDescription(backRefType),
             Object bean, TokenBuffer unknownTokens)
         throws IOException
     {
-        JsonDeserializer<Object> subDeser;
-
         // First: maybe we have already created sub-type deserializer?
-        synchronized (this) {
-            subDeser = (_subDeserializers == null) ? null : _subDeserializers.get(new ClassKey(bean.getClass()));
-        }
+        final ClassKey classKey = new ClassKey(bean.getClass());
+        JsonDeserializer<Object> subDeser = (_subDeserializers == null) ? null : _subDeserializers.get(classKey);
         if (subDeser != null) {
             return subDeser;
         }
         // If not, maybe we can locate one. First, need provider
-        JavaType type = ctxt.constructType(bean.getClass());
+        final JavaType type = ctxt.constructType(bean.getClass());
         /* 30-Jan-2012, tatu: Ideally we would be passing referring
          *   property; which in theory we could keep track of via
          *   ResolvableDeserializer (if we absolutely must...).
@@ -1828,12 +1927,14 @@ ClassUtil.name(refName), ClassUtil.getTypeDescription(backRefType),
         subDeser = ctxt.findRootValueDeserializer(type);
         // Also, need to cache it
         if (subDeser != null) {
-            synchronized (this) {
-                if (_subDeserializers == null) {
-                    _subDeserializers = new HashMap<ClassKey,JsonDeserializer<Object>>();;
+            if (_subDeserializers == null) {
+                synchronized (this) {
+                    if (_subDeserializers == null) {
+                        _subDeserializers = new ConcurrentHashMap<>();
+                    }
                 }
-                _subDeserializers.put(new ClassKey(bean.getClass()), subDeser);
             }
+            _subDeserializers.put(classKey, subDeser);
         }
         return subDeser;
     }
@@ -1856,7 +1957,7 @@ ClassUtil.name(refName), ClassUtil.getTypeDescription(backRefType),
      *   {@link JsonMappingException} are to be passed as is
      *</ul>
      */
-    public void wrapAndThrow(Throwable t, Object bean, String fieldName, DeserializationContext ctxt)
+    public <T> T wrapAndThrow(Throwable t, Object bean, String fieldName, DeserializationContext ctxt)
         throws IOException
     {
         // Need to add reference information
@@ -1887,7 +1988,8 @@ ClassUtil.name(refName), ClassUtil.getTypeDescription(backRefType),
         return t;
     }
 
-    protected Object wrapInstantiationProblem(Throwable t, DeserializationContext ctxt)
+    @SuppressWarnings("unchecked")
+    protected <T> T wrapInstantiationProblem(Throwable t, DeserializationContext ctxt)
         throws IOException
     {
         while (t instanceof InvocationTargetException && t.getCause() != null) {
@@ -1905,6 +2007,6 @@ ClassUtil.name(refName), ClassUtil.getTypeDescription(backRefType),
         if (!ctxt.isEnabled(DeserializationFeature.WRAP_EXCEPTIONS)) {
             ClassUtil.throwIfRTE(t);
         }
-        return ctxt.handleInstantiationProblem(_beanType.getRawClass(), null, t);
+        return (T) ctxt.handleInstantiationProblem(_beanType.getRawClass(), null, t);
     }
 }

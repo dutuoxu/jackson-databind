@@ -1,7 +1,14 @@
 package com.fasterxml.jackson.databind.node;
 
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+
+import static org.junit.jupiter.api.Assertions.*;
+
 public class TextNodeTest extends NodeTestBase
 {
+    @Test
     public void testText()
     {
         assertNull(TextNode.valueOf(null));
@@ -28,12 +35,29 @@ public class TextNodeTest extends NodeTestBase
         n = TextNode.valueOf("foobar");
         assertNodeNumbersForNonNumeric(n);
 
-        assertEquals("foobar", n.asText("barf"));
-        assertEquals("", empty.asText("xyz"));
+        assertEquals("foobar", n.asText());
+        assertEquals("", empty.asText());
 
         assertTrue(TextNode.valueOf("true").asBoolean(true));
         assertTrue(TextNode.valueOf("true").asBoolean(false));
         assertFalse(TextNode.valueOf("false").asBoolean(true));
         assertFalse(TextNode.valueOf("false").asBoolean(false));
+    }
+
+    @Test
+    public void testEquals()
+    {
+        assertEquals(new TextNode(null), new TextNode(null));
+        assertEquals(new TextNode("abc"), new TextNode("abc"));
+        assertNotEquals(new TextNode(null), new TextNode("def"));
+        assertNotEquals(new TextNode("abc"), new TextNode("def"));
+        assertNotEquals(new TextNode("abc"), new TextNode(null));
+    }
+
+    @Test
+    public void testHashCode()
+    {
+        assertEquals(0, new TextNode(null).hashCode());
+        assertEquals("abc".hashCode(), new TextNode("abc").hashCode());
     }
 }
