@@ -10,3 +10,5 @@ com.fasterxml.jackson.databind.introspect.BasicClassIntrospector 的 collectProp
 com.fasterxml.jackson.databind.introspect.BasicClassIntrospector 的 forSerialization 方法 
 
 com.fasterxml.jackson.databind.introspect.POJOPropertiesCollector 的 collectAll 方法
+
+com.fasterxml.jackson.databind.introspect.BasicClassIntrospector 的 _resolveAnnotatedClass 方法
