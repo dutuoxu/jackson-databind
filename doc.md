@@ -1,9 +1,11 @@
-WriterBasedJsonGenerator
-MapSerializer
+
+com.fasterxml.jackson.databind.ser.std.MapSerializer
 
 com.fasterxml.jackson.databind.type.MapType
 
-class com.fasterxml.jackson.databind.ser.BeanSerializerFactory 
+class com.fasterxml.jackson.databind.ser.BeanSerializerFactory
+
+com.fasterxml.jackson.databind.introspect.AnnotatedClass
 
 com.fasterxml.jackson.databind.introspect.BasicClassIntrospector 的 collectProperties 方法
 
