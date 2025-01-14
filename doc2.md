@@ -8,3 +8,4 @@
 ### com.fasterxml.jackson.databind.ser.BasicSerializerFactory的protected final JsonSerializer<?> findSerializerByAnnotations(SerializerProvider prov,JavaType type, BeanDescription beanDesc)方法
 ### com.fasterxml.jackson.databind.introspect.POJOPropertiesCollector的public AnnotatedMember getJsonValueAccessor()方法
 ### com.fasterxml.jackson.databind.introspect.POJOPropertiesCollector的protected void collectAll()方法
+### com.fasterxml.jackson.databind.ser.BeanSerializerFactory 的protected JsonSerializer<Object> constructBeanOrAddOnSerializer(SerializerProvider prov,JavaType type, BeanDescription beanDesc, boolean staticTyping)
